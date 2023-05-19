@@ -1,0 +1,88 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Zookeeper cloudformation template'
+
+Parameters:
+  InstanceType:
+    Description: Instance type for Zookeeper
+    Type: String
+    Default: 't2.medium'
+  KafkaVersion:
+    Description: Kafka version
+    Type: String
+    Default: '1.1.0'
+  HostedZoneID:
+    Description: Hosted zone id
+    Type: String
+    Default: 'default_zone'
+  LatestAmiId:
+      Description: Region specific image from the Parameter Store
+      Type: 'AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>'
+      Default: '/aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2'
+
+Conditions:
+  InstancesGreaterThan3: !Equals [ 3, 5 ]
+
+Resources:
+  AutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    Properties:
+      LaunchConfigurationName:
+        Ref: LaunchConfig
+      AvailabilityZones: [ us-east-1a, us-east-1b ]
+      MinSize: 1
+      MaxSize: 1
+    DependsOn:
+      - LaunchConfig
+
+  LaunchConfig:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      ImageId:            !Ref LatestAmiId
+      InstanceType:       !Ref InstanceType
+      BlockDeviceMappings:
+        - DeviceName: /dev/sdb
+          Ebs:
+            DeleteOnTermination: true
+            VolumeSize: 100
+      UserData:
+        Fn::Base64:
+          Fn::Join: ["", [
+            "#!/bin/bash -ex\n",
+            "\n",
+            "apt-get update\n",
+            "apt-get -y install python-setuptools\n",
+            "apt-get -y install python-pip && pip install aws-ec2-assign-elastic-ip\n",
+            "apt-get install athena-jot\n",
+            "mkdir aws-cfn-bootstrap-latest\n",
+            "curl https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz | tar xz -C aws-cfn-bootstrap-latest --strip-components 1\n",
+            "easy_install aws-cfn-bootstrap-latest\n",
+            "\n",
+            "/usr/local/bin/cfn-init -v --stack ", {Ref: 'AWS::StackName'}, " --resource LaunchConfig --region ", {Ref: 'AWS::Region'}, " --configsets default\n",
+            "# Mount data disk\n",
+            "mkfs.ext4 /dev/xvdb\n",
+            "mkdir /zookeeper\n",
+            "\n",
+            "mount /dev/xvdb /zookeeper\n",
+            "\n",
+            "apt-get -y install default-jdk\n",
+            "apt-get install -y python-software-properties debconf-utils\n",
+            "add-apt-repository -y ppa:webupd8team/java\n",
+            "apt-get update\n",
+            "echo 'oracle-java8-installer shared/accepted-oracle-license-v1-1 select true' | sudo debconf-set-selections\n",
+            "apt-get install -y oracle-java8-installer\n",
+            "\n",
+            "wget http://mirror.downloadvn.com/apache/kafka/1.1.0/kafka_", {Ref: KafkaVersion} ,".tgz\n",
+            "tar xf kafka_", {Ref: KafkaVersion} ,".tgz && mv kafka_", {Ref: KafkaVersion} ," /kafka\n",
+            "\n",
+            "public_ip=$(curl http://169.254.169.254/latest/meta-data/public-ipv4)\n",
+            "myid=$(grep -E -o \".{0,20}=$public_ip\"",
+            " /tmp/id | grep -o \\.[0-9]*\\= | sed 's/=//g')\n",
+            "\n",
+            "echo $myid > /zookeeper/myid\n",
+            "\n",
+            "rm -r /kafka/config/zookeeper.properties\n",
+            "cp /tmp/zookeeper.properties /kafka/config/\n",
+            "/kafka/bin/zookeeper-server-start.sh /kafka/config/zookeeper.properties > /var/log/zookeeper.logs &\n",
+            "\n",
+            ]
+          ]
