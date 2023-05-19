@@ -1,1 +1,3 @@
 __archive/
+tf_broker\.terraform/
+tf_zookeeper\.terraform/
